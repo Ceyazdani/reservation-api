@@ -1,66 +1,83 @@
 import express from "express";
 import cors from "cors";
-import pkg from "pg";
-const { Pool } = pkg;
+import pg from "pg";
 
 const app = express();
-
-// فعال‌سازی CORS برای همهٔ دامنه‌ها
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type"]
-}));
-
+app.use(cors());
 app.use(express.json());
 
-// اتصال امن به دیتابیس PostgreSQL در Render
-const pool = new Pool({
+const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// تست سلامت API
-app.get("/", (req, res) => {
-  res.send("Reservation API is running");
-});
-
-// گرفتن رزروها با فیلتر اختیاری بر اساس dateKey
-app.get("/reservations", async (req, res) => {
+// ✅ ساخت جدول داخل یک تابع که قبل از شروع سرور اجرا می‌شود
+async function initDB() {
   try {
-    const { dateKey } = req.query;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reservations (
+        id SERIAL PRIMARY KEY,
+        service TEXT NOT NULL,
+        date_key TEXT NOT NULL,
+        date_label TEXT NOT NULL,
+        time TEXT NOT NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL
+      );
+    `);
 
-    let query = "SELECT * FROM reservations";
-    let params = [];
-
-    if (dateKey) {
-      query += " WHERE date_key = $1";
-      params.push(dateKey);
-    }
-
-    const result = await pool.query(query, params);
-    res.json(result.rows);
+    console.log("✅ Table 'reservations' is ready");
   } catch (err) {
-    res.status(500).send(err.message);
+    console.error("❌ Error creating table:", err);
+  }
+}
+
+app.get("/Reservations", async (req, res) => {
+  const { dateKey } = req.query;
+  try {
+    let result;
+    if (dateKey) {
+      result = await pool.query(
+        "SELECT * FROM reservations WHERE date_key = $1 ORDER BY time ASC",
+        [dateKey]
+      );
+    } else {
+      result = await pool.query(
+        "SELECT * FROM reservations ORDER BY id DESC"
+      );
+    }
+    res.json(result.rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "server_error" });
   }
 });
 
-// ثبت رزرو جدید
-app.post("/reservations", async (req, res) => {
-  try {
-    const { service, dateKey, dateLabel, time, name, phone } = req.body;
+app.post("/Reservations", async (req, res) => {
+  const { service, dateKey, dateLabel, time, name, phone } = req.body;
 
+  if (!service || !dateKey || !dateLabel || !time || !name || !phone) {
+    return res.status(400).json({ error: "missing_fields" });
+  }
+
+  try {
     const result = await pool.query(
       `INSERT INTO reservations (service, date_key, date_label, time, name, phone)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING *`,
       [service, dateKey, dateLabel, time, name, phone]
     );
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).send(err.message);
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "server_error" });
   }
 });
 
-// اجرای سرور
-app.listen(3000, () => console.log("Server running on port 3000"));
+// ✅ اول دیتابیس را آماده کن، بعد سرور را بالا بیاور
+initDB().then(() => {
+  const PORT = process.env.PORT || 10000;
+  app.listen(PORT, () => {
+    console.log("✅ Server running on port", PORT);
+  });
+});
